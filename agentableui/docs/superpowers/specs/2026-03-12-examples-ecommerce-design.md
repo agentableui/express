@@ -15,7 +15,7 @@ A fully functional e-commerce store demonstrating AgentableUI end-to-end. Real i
 
 ## State Machine
 
-Mirrors the CLAUDE.md e-commerce example:
+Based on the CLAUDE.md e-commerce example (uses `checkout-flow` renamed to `checkout` for brevity):
 
 ```
 home → search-results → product-page → cart → checkout → order-confirmation
@@ -45,7 +45,7 @@ home → search-results → product-page → cart → checkout → order-confirm
 | `search-results` | `view-product` | `productId: string (required)` | `product-page` | |
 | `search-results` | `search` | `query: string (required)` | `search-results` | Self-transition |
 | `search-results` | `go-home` | — | `home` | Pure transition |
-| `product-page` | `add-to-cart` | `productId: string (required)`, `quantity: number (optional)` | `cart` | Errors: `OUT_OF_STOCK`, `INVALID_QUANTITY`. Redirects: `auth-required` → `login` |
+| `product-page` | `add-to-cart` | `productId: string (required)`, `quantity: number (optional)`, `giftWrap: boolean (optional)` | `cart` | Errors: `OUT_OF_STOCK`, `INVALID_QUANTITY`. Redirects: `auth-required` → `login` |
 | `product-page` | `go-back` | — | `home` | Pure transition |
 | `cart` | `checkout` | — | `checkout` | Condition: `cart-not-empty` |
 | `cart` | `remove-item` | `itemId: string (required)` | — | Self-transition |
@@ -57,7 +57,7 @@ home → search-results → product-page → cart → checkout → order-confirm
 
 ### Features Demonstrated
 
-- Typed params: string, number, enum
+- Typed params: string, number, boolean, enum (all four types)
 - Auth redirects + `returnToPrevious`
 - Conditions (`cart-not-empty`)
 - Error codes (`OUT_OF_STOCK`, `PAYMENT_FAILED`, `INVALID_ADDRESS`, `INVALID_QUANTITY`)
@@ -65,6 +65,10 @@ home → search-results → product-page → cart → checkout → order-confirm
 - Auto-passthrough for pure transitions (`go-home`, `go-back`, `continue-shopping`, `back-to-cart`)
 - Auth roles: public manifest (home, search-results, product-page, login) and user manifest (all states)
 - API key auth + per-key rate limiting
+- Security config block (`requireApiKey`, `rateLimit`, `publicActions`, `authenticatedActions`)
+- Meta-manifest discovery (`/.well-known/agentable.json`)
+- Manifest `versionHash` + ETag caching (handled by express middleware)
+- Action and param `description` fields for LLM agent consumption
 
 ## In-Memory Backend
 
@@ -133,15 +137,18 @@ examples-ecommerce/
 
 `scripts/demo-agent.ts` uses `@agentableui/sdk` to walk through the full agent flow:
 
-1. `discover()` — fetch meta-manifest + public manifest
-2. `execute('search', { query: 'shoes' })` — search products
-3. `execute('view-product', { productId: '...' })` — view a result
-4. Attempt `add-to-cart` without auth → observe redirect to login
-5. `execute('authenticate', { token: 'demo-key' })` — authenticate
-6. `execute('add-to-cart', { productId: '...', quantity: 1 })` — add to cart
-7. `execute('checkout')` — proceed to checkout
-8. `execute('submit-order', { shippingAddress: '...', paymentMethod: 'card' })` — place order
-9. Print order confirmation
+1. `discover()` — fetch meta-manifest (`/.well-known/agentable.json`) + public manifest
+2. `getStateGraph()` — print the state graph overview
+3. `validatePlan(['search', 'view-product', 'add-to-cart', 'checkout', 'submit-order'])` — validate the planned action sequence
+4. `execute('search', { query: 'shoes' })` — search products
+5. `execute('view-product', { productId: '...' })` — view a result
+6. Attempt `add-to-cart` without auth → observe redirect to login
+7. `execute('authenticate', { token: 'demo-key' })` — authenticate
+8. `execute('add-to-cart', { productId: '...', quantity: 1 })` — add to cart
+9. `checkConditions()` — verify `cart-not-empty` is met before checkout
+10. `execute('checkout')` — proceed to checkout
+11. `execute('submit-order', { shippingAddress: '...', paymentMethod: 'card' })` — place order
+12. Print order confirmation
 
 This serves as both a runnable demo and a smoke test.
 
