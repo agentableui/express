@@ -21,14 +21,30 @@ export class RateLimiter {
   private buckets = new Map<string, Bucket>()
   private maxTokens: number
   private windowMs: number
+  private lastCleanup = Date.now()
 
   constructor(config: RateLimitConfig) {
     this.maxTokens = config.requests
     this.windowMs = parseWindow(config.window)
   }
 
+  get bucketCount(): number {
+    return this.buckets.size
+  }
+
   check(key: string): { allowed: boolean; retryAfter?: number } {
     const now = Date.now()
+
+    // Cleanup stale buckets every window interval
+    if (now - this.lastCleanup > this.windowMs) {
+      for (const [k, bucket] of this.buckets) {
+        if (now - bucket.windowStart > this.windowMs) {
+          this.buckets.delete(k)
+        }
+      }
+      this.lastCleanup = now
+    }
+
     let bucket = this.buckets.get(key)
 
     if (!bucket || now - bucket.windowStart >= this.windowMs) {

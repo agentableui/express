@@ -7,6 +7,7 @@ import type { AgentableConfig, HandlerFn, ConditionDef } from '@agentableui/core
 import type { AuthVerifier } from '../pipeline/auth'
 import type { RateLimiter } from '../pipeline/rate-limit'
 import { parseExecuteRequest, validateAction } from '../pipeline/validate'
+import type { Logger } from '../middleware'
 
 export function executeRoute<TContext>(
   config: AgentableConfig,
@@ -14,7 +15,8 @@ export function executeRoute<TContext>(
   conditions: Record<string, ConditionDef<TContext>>,
   authVerifier: AuthVerifier,
   rateLimiter: RateLimiter,
-  createContext: (req: Request) => TContext | Promise<TContext>
+  createContext: (req: Request) => TContext | Promise<TContext>,
+  logger?: Logger
 ): Router {
   const router = Router()
 
@@ -26,6 +28,15 @@ export function executeRoute<TContext>(
       return
     }
     const { action, params, currentState, returnTo } = parsed
+
+    // Validate returnTo
+    if (returnTo && !config.states[returnTo]) {
+      res.status(400).json({
+        status: 'invalid',
+        errors: [{ param: 'returnTo', message: `Unknown state "${returnTo}"` }],
+      })
+      return
+    }
 
     // Steps 2-3: Validate state and action
     const actionErrors = validateAction(config, currentState, action)
@@ -51,6 +62,7 @@ export function executeRoute<TContext>(
     if (requiresKey) {
       const authHeader = req.headers.authorization
       if (!authHeader?.startsWith('Bearer ')) {
+        logger?.warn('Unauthorized access attempt', { action })
         res.status(401).json({
           status: 'unauthorized',
           message: isAuthenticated
@@ -71,6 +83,7 @@ export function executeRoute<TContext>(
     if (apiKey) {
       const rateResult = rateLimiter.check(apiKey)
       if (!rateResult.allowed) {
+        logger?.warn('Rate limit exceeded', { apiKey: apiKey?.slice(0, 12) })
         res.status(429).json({ status: 'rate-limited', retryAfter: rateResult.retryAfter })
         return
       }
@@ -80,7 +93,8 @@ export function executeRoute<TContext>(
     let ctx: TContext
     try {
       ctx = await createContext(req)
-    } catch {
+    } catch (err) {
+      logger?.error('Context creation failed', { error: (err as Error).message })
       res.status(500).json({ error: 'Failed to create context' })
       return
     }
@@ -88,22 +102,27 @@ export function executeRoute<TContext>(
     // Step 7: Conditions
     if (actionConfig.available) {
       const condition = conditions[actionConfig.available]
-      if (condition) {
-        try {
-          const met = await condition.check(ctx)
-          if (!met) {
-            res.status(409).json({
-              status: 'unavailable',
-              state: currentState,
-              condition: actionConfig.available,
-              message: condition.description,
-            })
-            return
-          }
-        } catch {
-          res.status(500).json({ error: 'Condition check failed' })
+      if (!condition) {
+        res.status(500).json({
+          error: `Configuration error: condition "${actionConfig.available}" referenced by action "${action}" is not defined`,
+        })
+        return
+      }
+      try {
+        const met = await condition.check(ctx)
+        if (!met) {
+          res.status(409).json({
+            status: 'unavailable',
+            state: currentState,
+            condition: actionConfig.available,
+            message: condition.description,
+          })
           return
         }
+      } catch {
+        logger?.error('Condition check failed', { condition: actionConfig.available })
+        res.status(500).json({ error: 'Condition check failed' })
+        return
       }
     }
 
@@ -119,6 +138,11 @@ export function executeRoute<TContext>(
     // Step 9: Run handler
     try {
       const data = handler ? await handler(params, ctx) : {}
+
+      if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+        res.status(500).json({ error: 'Handler must return an object' })
+        return
+      }
 
       // Step 10: Determine response state
       let responseState: string
@@ -150,6 +174,7 @@ export function executeRoute<TContext>(
           returnTo: currentState,
         })
       } else {
+        logger?.error('Handler crashed', { action, error: err instanceof Error ? err.message : String(err) })
         res.status(500).json({ error: 'Internal server error' })
       }
     }
