@@ -1,0 +1,30 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Clone and build core since it's not yet published to npm
+      - name: Setup @agentableui/core
+        run: |
+          git clone https://github.com/agentableui/core.git /tmp/core
+          cd /tmp/core && pnpm install && pnpm build
+      # Clone and build sdk for integration tests
+      - name: Setup @agentableui/sdk
+        run: |
+          git clone https://github.com/agentableui/sdk.git /tmp/sdk
+          cd /tmp/sdk && sed -i 's|"workspace:\*"|"file:/tmp/core"|g' package.json && pnpm install --no-frozen-lockfile && pnpm build
+      # Link core and sdk as file deps
+      - name: Link workspace deps
+        run: |
+          sed -i 's|"@agentableui/core": "workspace:\*"|"@agentableui/core": "file:/tmp/core"|g' package.json
+          sed -i 's|"@agentableui/sdk": "workspace:\*"|"@agentableui/sdk": "file:/tmp/sdk"|g' package.json
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
