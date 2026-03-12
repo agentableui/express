@@ -1,7 +1,0 @@
-packages:
-  - 'core'
-  - 'express'
-  - 'sdk'
-  - 'cli'
-  - 'react'
-  - 'examples-ecommerce'
