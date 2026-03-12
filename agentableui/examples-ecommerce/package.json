@@ -1,0 +1,31 @@
+{
+  "name": "@agentableui/examples-ecommerce",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server/index.ts",
+    "generate": "npx agentableui generate",
+    "demo": "tsx scripts/demo-agent.ts"
+  },
+  "dependencies": {
+    "@agentableui/core": "workspace:*",
+    "@agentableui/express": "workspace:*",
+    "@agentableui/react": "workspace:*",
+    "@agentableui/cli": "workspace:*",
+    "@agentableui/sdk": "workspace:*",
+    "express": "^4.21.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
