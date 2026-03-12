@@ -9,54 +9,98 @@ CLI tool for AgentableUI that reads `agentable.config.ts` and generates static m
 ### `init`
 
 Scaffolds starter files into the current directory:
-- `agentable.config.ts` — minimal example (2 states, 2 actions)
+- `agentable.config.ts` — minimal example config (2 states, 3 actions)
 - `agentable.handlers.ts` — matching handler stubs
-- `agentable.conditions.ts` — empty conditions
-- Skips existing files with a warning
+- `agentable.conditions.ts` — empty conditions file
+- `server.ts` — Express server with `agentableMiddleware()` wired up, imports from the three config files
+- Skips files that already exist (prints warning per file)
+- No flags needed
 
 ### `generate`
 
 Reads `agentable.config.ts` via jiti, outputs to `.agentable/`:
 - `agentable.<role>.json` — one manifest per auth role (via core's `buildManifest()`)
 - `agentable.meta.json` — meta-manifest (via core's `buildMetaManifest()`)
-- `hooks.ts` — typed React hooks derived from config (see Generated Hooks section)
-- `--watch` flag: chokidar watches config/handlers/conditions files, re-generates on change
+- `hooks.ts` — typed React hooks derived from config (see Generated Hooks section). **Skipped if `@agentableui/react` is not in dependencies** — prints "Skipping hooks.ts (@agentableui/react not installed)".
+- `.gitignore` — contains `keys.json` (manifests and hooks should be committed)
+- `--watch` flag: chokidar watches `agentable.config.ts`, `agentable.handlers.ts`, `agentable.conditions.ts`, re-generates on change with 300ms debounce
+- `--config <path>` flag: override config file location (default: `agentable.config.ts` in cwd)
 
 ### `validate`
 
-Static analysis of config + handlers + conditions:
-- Orphan states (unreachable from entrypoint)
+Static analysis of the config. Two modes:
+
+**Default (config-only, always safe):**
+- Orphan states (unreachable from entrypoint via BFS)
 - Invalid transitions (referencing non-existent states)
-- Missing handlers (non-pure-transition actions without a handler)
-- Undefined conditions (actions referencing conditions not in conditions file)
-- Exit code 1 on errors, 0 on success
+- Duplicate action names across states that would collide in fallback handler resolution
+- Empty states (states with no actions)
+
+**`--full` (loads handlers + conditions via jiti, for CI environments):**
+- All config-only checks above, plus:
+- Missing handlers (non-pure-transition actions without a scoped or fallback handler)
+- Undefined conditions (actions reference conditions not defined in conditions file)
+- Unused handlers (handler keys that don't match any state.action or action)
+- Unused conditions (conditions defined but never referenced by any action)
+
+Exit code 1 if any errors found, 0 on success. Warnings (unused handlers/conditions) don't affect exit code.
+
+Output format: one line per issue, prefixed with `error:` or `warn:`, includes state/action context.
 
 ### `visualize`
 
-Prints the state machine graph.
-- Default: ASCII (`home ──search──> results`)
-- `--format mermaid`: outputs `stateDiagram-v2` syntax
-- Self-transitions shown as loops
+Prints the state machine graph. Default: ASCII list format. `--format mermaid` for mermaid.
+
+**ASCII (default):**
+```
+test-store (entrypoint: home)
+
+  home /
+    ──search──> search-results
+    ──view-product──> product-page
+
+  search-results /search
+    ──view-product──> product-page
+    ──search──> search-results (self)
+    ──go-home──> home
+
+  product-page /products/:id
+    ──add-to-cart──> cart [auth]
+    ──go-back──> home
+```
+
+**Mermaid (`--format mermaid`):**
+```
+stateDiagram-v2
+    [*] --> home
+    home --> search_results : search
+    home --> product_page : view-product
+    search_results --> product_page : view-product
+    search_results --> search_results : search
+    search_results --> home : go-home
+    product_page --> cart : add-to-cart
+    product_page --> home : go-back
+```
 
 ### `keys generate --name <name> [--role <role>]`
 
-Creates an API key via core's `generateKey()`. Prints the full key (only shown once). Defaults to `.agentable/keys.json`.
+Creates an API key via core's `generateKey()`. Prints the full key (only shown once). Role defaults to `user`. Keys stored in `.agentable/keys.json`.
 
 ### `keys list`
 
-Lists keys in table format via core's `listKeys()`.
+Lists keys in table format via core's `listKeys()`. Columns: prefix, name, role, created, status.
 
 ### `keys revoke <prefix>`
 
-Revokes a key by prefix via core's `revokeKey()`.
+Revokes a key by prefix via core's `revokeKey()`. No confirmation prompt (CLI tools should be scriptable).
 
 ## Architecture
 
 ```
 cli/
 ├── src/
-│   ├── index.ts              # commander program, register commands
-│   ├── config-loader.ts      # jiti-based TS config loader
+│   ├── index.ts              # commander program setup, register all commands
+│   ├── config-loader.ts      # jiti-based config loader (+ optional handlers/conditions)
 │   ├── commands/
 │   │   ├── init.ts           # scaffold project files
 │   │   ├── generate.ts       # build manifests + hooks
@@ -64,8 +108,18 @@ cli/
 │   │   ├── visualize.ts      # ASCII + mermaid output
 │   │   └── keys.ts           # generate/list/revoke subcommands
 │   └── generators/
-│       ├── manifests.ts      # write .agentable/*.json
-│       └── hooks.ts          # write .agentable/hooks.ts
+│       ├── manifests.ts      # write .agentable/*.json files
+│       └── hooks.ts          # write .agentable/hooks.ts (type generation)
+├── tests/
+│   ├── config-loader.test.ts
+│   ├── generate.test.ts
+│   ├── validate.test.ts
+│   ├── visualize.test.ts
+│   └── fixtures/
+│       ├── valid-config.ts
+│       ├── orphan-state-config.ts
+│       ├── invalid-transition-config.ts
+│       └── valid-handlers.ts
 ├── package.json
 ├── tsconfig.json
 ├── tsup.config.ts
@@ -74,24 +128,67 @@ cli/
 
 ## Config Loading
 
-Uses `jiti` to import `agentable.config.ts` at runtime. Resolves from cwd by default, `--config <path>` flag to override. The loaded module's default export is expected to be the return value of `defineAgentable()`.
+Uses `jiti` to import TypeScript config files at runtime. Resolves from cwd by default, `--config <path>` flag to override.
 
-For `validate`, also loads `agentable.handlers.ts` and `agentable.conditions.ts` to cross-check handler/condition coverage.
+```typescript
+// config-loader.ts
+import { createJiti } from 'jiti'
+
+export async function loadConfig(configPath?: string): Promise<AgentableConfig> {
+  const jiti = createJiti(process.cwd())
+  const resolved = configPath ?? './agentable.config.ts'
+  const mod = await jiti.import(resolve(process.cwd(), resolved))
+  const config = (mod as any).default ?? mod
+  // validate it's a valid AgentableConfig shape
+  return config
+}
+
+export async function loadHandlers(handlersPath?: string) { /* same pattern */ }
+export async function loadConditions(conditionsPath?: string) { /* same pattern */ }
+```
+
+Error handling: if file not found, print clear error with expected path and exit 1. If TS syntax error, print jiti's error message and exit 1.
 
 ## Generated Hooks
 
-The `generate` command produces `.agentable/hooks.ts`:
+The `generate` command produces `.agentable/hooks.ts` with **deep param typing**:
 
 ```typescript
-// .agentable/hooks.ts — AUTO-GENERATED, DO NOT EDIT
+// .agentable/hooks.ts — AUTO-GENERATED by @agentableui/cli, DO NOT EDIT
 import { createHooks } from '@agentableui/react'
 
 export type AppConfig = {
   states: {
-    home: { actions: 'search' | 'view-product' }
-    'search-results': { actions: 'view-product' | 'search' | 'go-home' }
-    'product-page': { actions: 'add-to-cart' | 'go-back' }
-    cart: { actions: 'checkout' | 'remove-item' | 'continue-shopping' }
+    home: {
+      actions: {
+        search: { params: { query: string }; transitions: 'search-results' }
+        'view-product': { params: { productId: string }; transitions: 'product-page' }
+      }
+    }
+    'search-results': {
+      actions: {
+        'view-product': { params: { productId: string }; transitions: 'product-page' }
+        search: { params: { query: string }; transitions: 'search-results' }
+        'go-home': { params: {}; transitions: 'home' }
+      }
+    }
+    'product-page': {
+      actions: {
+        'add-to-cart': {
+          params: { productId: string; quantity?: number }
+          transitions: 'cart'
+          errors: 'OUT_OF_STOCK' | 'INVALID_QUANTITY'
+        }
+        'go-back': { params: {}; transitions: 'home' }
+      }
+    }
+    cart: {
+      actions: {
+        checkout: { params: {}; transitions: 'checkout-flow' }
+        'remove-item': { params: { itemId: string } }
+        'continue-shopping': { params: {}; transitions: 'home' }
+      }
+    }
   }
 }
 
@@ -103,31 +200,62 @@ export const {
 } = createHooks<AppConfig>()
 ```
 
-The React package provides `createHooks<T>()` as a generic factory. The CLI generates the typed invocation. Consumers import from `.agentable/hooks` for full autocomplete.
+Type mapping from config param types:
+- `string` → `string`
+- `number` → `number`
+- `boolean` → `boolean`
+- `enum` with values → string literal union (e.g., `'card' | 'paypal' | 'crypto'`)
+- `required: false` → optional property (`quantity?: number`)
+- No `transitions` → omitted (self-transition)
+- `errors` → string literal union
+
+## .agentable/ Directory
+
+- Created by `generate` if it doesn't exist
+- `generate` creates `.agentable/.gitignore` containing `keys.json`
+- Manifests (`*.json` except keys) and `hooks.ts` are meant to be committed
+- `keys.json` is always gitignored (contains secrets)
 
 ## Dependencies
 
-- `@agentableui/core` — workspace link (buildManifest, buildMetaManifest, generateKey, listKeys, revokeKey, validateParams)
+Runtime:
+- `@agentableui/core` — workspace link
 - `commander` — CLI framework
 - `jiti` — TS config loading
-- `chokidar` — file watching (for `--watch`)
-- `chalk` — terminal colors (optional, for visualize/validate output)
+- `chokidar` — file watching (`--watch`)
 
-Dev dependencies follow the same pattern as other packages: tsup, vitest, typescript, eslint.
+Dev:
+- `tsup`, `vitest`, `typescript`, `eslint`, `typescript-eslint`, `@types/node`, `@eslint/js`
+
+No `chalk` — use ANSI escape codes directly for the few colored outputs needed (keeps deps minimal).
 
 ## Package Setup
 
-Follows existing conventions:
-- `package.json` with `"bin": { "agentableui": "./dist/index.cjs" }`
-- tsup builds to dist/ (CJS + ESM + DTS)
-- Shebang `#!/usr/bin/env node` in entry
-- `"type": "module"` with CJS dist for bin compatibility
+```json
+{
+  "name": "@agentableui/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "agentableui": "./dist/index.cjs" },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  }
+}
+```
 
-## Testing
+tsup config: `entry: ['src/index.ts']`, `format: ['cjs', 'esm']`, `dts: true`, `banner` for CJS to add shebang.
 
-- Unit tests for each command module using vitest
-- Config loader tests with fixture configs
-- Validate tests with known-bad configs (orphan states, invalid transitions, etc.)
-- Generate tests that assert output file contents
-- Visualize tests that snapshot ASCII/mermaid output
-- Keys tests thin (core already tested)
+## Testing Strategy
+
+- **config-loader.test.ts** — loads fixture configs via jiti, verifies shape, tests error cases (missing file, bad syntax)
+- **generate.test.ts** — loads valid config, runs manifest + hooks generators, asserts output file contents. Tests hooks skipping when react not installed.
+- **validate.test.ts** — fixture configs with known issues: orphan states, invalid transitions, duplicate actions. Asserts correct error messages and exit behavior.
+- **visualize.test.ts** — snapshot tests for ASCII and mermaid output from a known config
+- Keys commands: thin wrappers, core already has coverage
